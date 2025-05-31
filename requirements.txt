@@ -1,7 +1,7 @@
-streamlit
-pandas
-numpy
-plotly
-scikit-learn
-statsmodels
-econml
+streamlit==1.45.1
+pandas==2.2.0
+numpy==1.26.0
+plotly==5.18.0
+scikit-learn==1.5.2
+statsmodels==0.14.1
+econml==0.15.1

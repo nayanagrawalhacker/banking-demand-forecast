@@ -9,9 +9,29 @@ from sklearn.ensemble import RandomForestRegressor # Using RF for XGBoost placeh
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from statsmodels.tsa.arima.model import ARIMA
-from econml.dml import LinearDML # Import for Causal Inference
 import warnings
 import base64 # For encoding images/files for download
+
+# Try to import econml, but continue if not available
+try:
+    import econml
+    from econml.dml import LinearDML, CausalForestDML
+    ECONML_AVAILABLE = True
+except ImportError:
+    ECONML_AVAILABLE = False
+    # Create placeholder classes for econml components
+    class LinearDML:
+        def __init__(self, *args, **kwargs):
+            pass
+        def fit(self, *args, **kwargs):
+            pass
+        def effect(self, *args, **kwargs):
+            return np.zeros(1)
+        def effect_interval(self, *args, **kwargs):
+            return np.zeros(1), np.zeros(1)
+    
+    class CausalForestDML(LinearDML):
+        pass
 
 # Suppress warnings for cleaner output
 warnings.filterwarnings("ignore")
@@ -213,7 +233,7 @@ def preprocess_for_ml(_df_ml, include_causal_features=False, causal_features_df=
     if include_causal_features and causal_features_df is not None:
         # Ensure index alignment before merging
         causal_features_df = causal_features_df.reindex(df_processed.index)
-        df_processed = pd.merge(df_processed, causal_features_df, left_index=True, right_index=True, how=\'left\')
+        df_processed = pd.merge(df_processed, causal_features_df, left_index=True, right_index=True, how='left')
         # Fill potential NaNs introduced by merge or calculation (e.g., with 0 or mean)
         for col in causal_features_df.columns:
              if col in df_processed.columns:
@@ -293,6 +313,10 @@ def get_confounders(_df_encoded, _treatment_var, _outcome_var):
 @st.cache_resource
 def train_causal_model(_df_causal, _treatment_var, _outcome_var):
     """Trains a causal model using LinearDML and returns the model and effects."""
+    if not ECONML_AVAILABLE:
+        st.warning("Causal inference features are disabled in this deployment due to dependency constraints.")
+        return None, np.nan, np.nan, np.nan, None, None
+        
     try:
         categorical_features = ["Product", "Region", "Customer_Segment"]
         df_encoded = pd.get_dummies(_df_causal, columns=categorical_features, drop_first=True)
@@ -312,7 +336,7 @@ def train_causal_model(_df_causal, _treatment_var, _outcome_var):
         model = LinearDML(
             model_y=RandomForestRegressor(n_estimators=50, max_depth=3, random_state=42), # Simplified models
             model_t=RandomForestRegressor(n_estimators=50, max_depth=3, random_state=42),
-            discrete_treatment=(_treatment_var == \'Promotion_Active\'),
+            discrete_treatment=(_treatment_var == 'Promotion_Active'),
             cv=2 # Further reduced CV folds
         )
         model.fit(Y_train, T_train, X=X_train)
@@ -335,6 +359,11 @@ def train_causal_model(_df_causal, _treatment_var, _outcome_var):
 @st.cache_resource
 def train_evaluate_causal_ml(_df_filtered):
     """Trains an ML model incorporating causal features."""
+    if not ECONML_AVAILABLE:
+        st.warning("Causal ML model is using standard RandomForest without causal features due to dependency constraints.")
+        # Fall back to standard XGBoost/RandomForest if econml is not available
+        return train_evaluate_xgboost(_df_filtered)
+        
     df_causal_ml = _df_filtered.copy()
     outcome_var = "Product_Demand"
     treatment_vars = ["Ad_Spend", "Interest_Rate", "Promotion_Active"]
@@ -467,7 +496,7 @@ if st.session_state.page == "🏠 Home / Overview":
         st.caption("Compare different models.")
     with col3:
         st.markdown("**🧠 Causal Insights**")
-        st.caption("Run \'What-If\' scenarios.")
+        st.caption("Run 'What-If' scenarios.")
         
     st.divider()
     st.markdown("_Use the sidebar to navigate through the different sections of the application._")
@@ -505,7 +534,7 @@ elif st.session_state.page == "📊 Dataset Explorer & EDA":
             st.markdown("**Total Monthly Demand per Product**")
             time_series_df = df_filtered.groupby(["Month", "Product"])["Product_Demand"].sum().reset_index()
             fig_ts = px.line(time_series_df, x="Month", y="Product_Demand", color="Product", labels={"Product_Demand": "Total Demand"}, template=plotly_template)
-            fig_ts.update_layout(legend_title_text=\'Product\')
+            fig_ts.update_layout(legend_title_text='Product')
             st.plotly_chart(fig_ts, use_container_width=True)
             
         with tab2:
@@ -522,7 +551,7 @@ elif st.session_state.page == "📊 Dataset Explorer & EDA":
             valid_corr_cols = [col for col in corr_cols if col in numerical_cols]
             if len(valid_corr_cols) > 1:
                 correlation_matrix = df_filtered[valid_corr_cols].corr()
-                fig_corr = go.Figure(data=go.Heatmap(z=correlation_matrix.values, x=correlation_matrix.columns, y=correlation_matrix.columns, colorscale=\'Viridis\', zmin=-1, zmax=1, colorbar=dict(title=\'Correlation\')))
+                fig_corr = go.Figure(data=go.Heatmap(z=correlation_matrix.values, x=correlation_matrix.columns, y=correlation_matrix.columns, colorscale='Viridis', zmin=-1, zmax=1, colorbar=dict(title='Correlation')))
                 fig_corr.update_layout(template=plotly_template)
                 st.plotly_chart(fig_corr, use_container_width=True)
             else: st.warning("Not enough numerical columns for correlation analysis.")
@@ -568,8 +597,8 @@ elif st.session_state.page == "📈 Forecasting & Comparison":
             
             if not results_df_baseline.empty:
                 fig_pred_baseline = go.Figure()
-                fig_pred_baseline.add_trace(go.Scatter(x=results_df_baseline["Month"], y=results_df_baseline["Actual"], mode=\'lines\', name=\'Actual Demand\'))
-                fig_pred_baseline.add_trace(go.Scatter(x=results_df_baseline["Month"], y=results_df_baseline["Predicted"], mode=\'lines\', name=\'Predicted Demand\', line=dict(dash=\'dash\')))
+                fig_pred_baseline.add_trace(go.Scatter(x=results_df_baseline["Month"], y=results_df_baseline["Actual"], mode='lines', name='Actual Demand'))
+                fig_pred_baseline.add_trace(go.Scatter(x=results_df_baseline["Month"], y=results_df_baseline["Predicted"], mode='lines', name='Predicted Demand', line=dict(dash='dash')))
                 fig_pred_baseline.update_layout(title=f"Actual vs. Predicted Demand - {baseline_model_type}", xaxis_title="Month", yaxis_title="Product Demand", template=plotly_template)
                 st.plotly_chart(fig_pred_baseline, use_container_width=True)
             else: st.warning("Could not generate predictions for the selected baseline model.")
@@ -577,73 +606,82 @@ elif st.session_state.page == "📈 Forecasting & Comparison":
         # --- Causal Impact Simulator Tab ---
         with forecast_tabs[1]:
             st.header("🧠 Causal Impact Simulator")
-            st.markdown("Estimate the causal effect of interventions (like changing Ad Spend or Interest Rates) on Product Demand and run \'What-If\' scenarios.")
+            st.markdown("Estimate the causal effect of interventions (like changing Ad Spend or Interest Rates) on Product Demand and run 'What-If' scenarios.")
             
-            treatment_options = {"Advertising Spend": "Ad_Spend", "Interest Rate": "Interest_Rate", "Promotion Active": "Promotion_Active"}
-            selected_treatment_label = st.selectbox("Select Treatment Variable to Analyze", list(treatment_options.keys()), key="causal_treat_select")
-            selected_treatment_var = treatment_options[selected_treatment_label]
-            outcome_var = "Product_Demand"
-            
-            st.subheader(f"Estimated Average Effect of {selected_treatment_label}")
-            with st.spinner(f"Estimating causal effect for {selected_treatment_label}..."): causal_model, ate, lower_ci, upper_ci, X_test_causal, _ = train_causal_model(df_filtered, selected_treatment_var, outcome_var)
-            
-            if not np.isnan(ate):
-                st.metric(f"Average Treatment Effect (ATE)", f"{ate:.3f}")
-                st.caption(f"*Interpretation:* A one-unit change in {selected_treatment_label} is estimated to change {outcome_var} by {ate:.3f} units, on average. (95% CI: [{lower_ci:.3f}, {upper_ci:.3f}])")
+            if not ECONML_AVAILABLE:
+                st.warning("⚠️ Causal inference features are disabled in this deployment due to dependency constraints. This is a simplified version of the dashboard.")
+                st.info("The full version with causal inference requires the econml package. Consider deploying locally or on a platform that supports all dependencies.")
             else:
-                st.warning(f"Could not estimate ATE for {selected_treatment_label}.")
+                treatment_options = {"Advertising Spend": "Ad_Spend", "Interest Rate": "Interest_Rate", "Promotion Active": "Promotion_Active"}
+                selected_treatment_label = st.selectbox("Select Treatment Variable to Analyze", list(treatment_options.keys()), key="causal_treat_select")
+                selected_treatment_var = treatment_options[selected_treatment_label]
+                outcome_var = "Product_Demand"
+                
+                st.subheader(f"Estimated Average Effect of {selected_treatment_label}")
+                with st.spinner(f"Estimating causal effect for {selected_treatment_label}..."): causal_model, ate, lower_ci, upper_ci, X_test_causal, _ = train_causal_model(df_filtered, selected_treatment_var, outcome_var)
+                
+                if not np.isnan(ate):
+                    st.metric(f"Average Treatment Effect (ATE)", f"{ate:.3f}")
+                    st.caption(f"*Interpretation:* A one-unit change in {selected_treatment_label} is estimated to change {outcome_var} by {ate:.3f} units, on average. (95% CI: [{lower_ci:.3f}, {upper_ci:.3f}])")
+                else:
+                    st.warning(f"Could not estimate ATE for {selected_treatment_label}.")
 
-            st.divider()
-            st.subheader("What-If Scenario Simulation")
-            if causal_model is not None and X_test_causal is not None:
-                try:
-                    categorical_features_cf = ["Product", "Region", "Customer_Segment"]
-                    df_encoded_cf = pd.get_dummies(df_filtered, columns=categorical_features_cf, drop_first=True)
-                    confounders_cf = get_confounders(df_encoded_cf, selected_treatment_var, outcome_var)
-                    X_cf = df_encoded_cf[confounders_cf]
-                    T_cf = df_encoded_cf[selected_treatment_var]
-                    Y_cf = df_encoded_cf[outcome_var]
-                    scaler_cf = StandardScaler()
-                    X_scaled_cf = scaler_cf.fit_transform(X_cf)
-                    X_scaled_df_cf = pd.DataFrame(X_scaled_cf, columns=confounders_cf, index=X_cf.index)
-                    _, X_test_causal_sim, _, T_test_cf, _, _ = train_test_split(X_scaled_df_cf, T_cf, Y_cf, test_size=0.3, random_state=42)
-                    baseline_value = T_test_cf.mean()
-                except Exception as e:
-                    st.warning(f"Could not determine baseline value for scenario: {e}")
-                    baseline_value = df_filtered[selected_treatment_var].mean()
-                
-                st.markdown(f"Simulate the impact of changing **{selected_treatment_label}** from its average test set value ({baseline_value:.2f}).")
-                
-                sim_col1, sim_col2 = st.columns([1,2])
-                with sim_col1:
-                    if selected_treatment_var == "Promotion_Active":
-                        counterfactual_value = st.radio("Set Promotion Status:", [0, 1], index=int(round(baseline_value)), format_func=lambda x: "OFF" if x == 0 else "ON", key="promo_radio")
-                    else:
-                        min_val = float(df_filtered[selected_treatment_var].min())
-                        max_val = float(df_filtered[selected_treatment_var].max())
-                        default_val = float(baseline_value)
-                        counterfactual_value = st.number_input(f"Set Hypothetical {selected_treatment_label} Value:", min_value=min_val, max_value=max_val, value=default_val, step=(max_val-min_val)/100, key="counterfactual_input")
-                
-                with sim_col2:
-                    with st.container(): # Container for result
-                        try:
-                            # Ensure X_test_causal_sim is not empty and has the correct shape/index
-                            if not X_test_causal_sim.empty:
-                                counterfactual_effect = causal_model.effect(X_test_causal_sim, T0=baseline_value, T1=counterfactual_value)
-                                avg_counterfactual_effect = counterfactual_effect.mean()
-                                st.success(f"**Estimated Impact:**")
-                                st.markdown(f"Changing {selected_treatment_label} from `{baseline_value:.2f}` to `{counterfactual_value:.2f}` is predicted to change average demand by **`{avg_counterfactual_effect:.3f}`** units.")
-                            else:
-                                st.warning("Test data for causal model is empty, cannot run simulation.")
-                        except Exception as e: 
-                            st.error(f"Could not calculate counterfactual effect: {e}")
-                            st.caption("This might happen if the model or data is unsuitable for the chosen scenario.")
-            else: st.warning("Causal model not available for scenario simulation.")
+                st.divider()
+                st.subheader("What-If Scenario Simulation")
+                if causal_model is not None and X_test_causal is not None:
+                    try:
+                        categorical_features_cf = ["Product", "Region", "Customer_Segment"]
+                        df_encoded_cf = pd.get_dummies(df_filtered, columns=categorical_features_cf, drop_first=True)
+                        confounders_cf = get_confounders(df_encoded_cf, selected_treatment_var, outcome_var)
+                        X_cf = df_encoded_cf[confounders_cf]
+                        T_cf = df_encoded_cf[selected_treatment_var]
+                        Y_cf = df_encoded_cf[outcome_var]
+                        scaler_cf = StandardScaler()
+                        X_scaled_cf = scaler_cf.fit_transform(X_cf)
+                        X_scaled_df_cf = pd.DataFrame(X_scaled_cf, columns=confounders_cf, index=X_cf.index)
+                        _, X_test_causal_sim, _, T_test_cf, _, _ = train_test_split(X_scaled_df_cf, T_cf, Y_cf, test_size=0.3, random_state=42)
+                        baseline_value = T_test_cf.mean()
+                    except Exception as e:
+                        st.warning(f"Could not determine baseline value for scenario: {e}")
+                        baseline_value = df_filtered[selected_treatment_var].mean()
+                    
+                    st.markdown(f"Simulate the impact of changing **{selected_treatment_label}** from its average test set value ({baseline_value:.2f}).")
+                    
+                    sim_col1, sim_col2 = st.columns([1,2])
+                    with sim_col1:
+                        if selected_treatment_var == "Promotion_Active":
+                            counterfactual_value = st.radio("Set Promotion Status:", [0, 1], index=int(round(baseline_value)), format_func=lambda x: "OFF" if x == 0 else "ON", key="promo_radio")
+                        else:
+                            min_val = float(df_filtered[selected_treatment_var].min())
+                            max_val = float(df_filtered[selected_treatment_var].max())
+                            default_val = float(baseline_value)
+                            counterfactual_value = st.number_input(f"Set Hypothetical {selected_treatment_label} Value:", min_value=min_val, max_value=max_val, value=default_val, step=(max_val-min_val)/100, key="counterfactual_input")
+                    
+                    with sim_col2:
+                        with st.container(): # Container for result
+                            try:
+                                # Ensure X_test_causal_sim is not empty and has the correct shape/index
+                                if not X_test_causal_sim.empty:
+                                    counterfactual_effect = causal_model.effect(X_test_causal_sim, T0=baseline_value, T1=counterfactual_value)
+                                    avg_counterfactual_effect = counterfactual_effect.mean()
+                                    st.success(f"**Estimated Impact:**")
+                                    st.markdown(f"Changing {selected_treatment_label} from `{baseline_value:.2f}` to `{counterfactual_value:.2f}` is predicted to change average demand by **`{avg_counterfactual_effect:.3f}`** units.")
+                                else:
+                                    st.warning("Test data for causal model is empty, cannot run simulation.")
+                            except Exception as e: 
+                                st.error(f"Could not calculate counterfactual effect: {e}")
+                                st.caption("This might happen if the model or data is unsuitable for the chosen scenario.")
+                else: st.warning("Causal model not available for scenario simulation.")
 
         # --- Combined Causal ML Tab ---
         with forecast_tabs[2]:
             st.header("✨ Combined Causal + ML Forecast")
-            st.markdown("This model incorporates estimated causal effects as features into a Random Forest model to potentially improve forecast accuracy.")
+            
+            if not ECONML_AVAILABLE:
+                st.markdown("This model would normally incorporate estimated causal effects as features into a Random Forest model to potentially improve forecast accuracy.")
+                st.warning("⚠️ Causal ML features are using standard RandomForest without causal features due to dependency constraints.")
+            else:
+                st.markdown("This model incorporates estimated causal effects as features into a Random Forest model to potentially improve forecast accuracy.")
             
             results_df_cml = pd.DataFrame()
             rmse_cml, mape_cml, model_obj_cml = np.nan, np.nan, None
@@ -656,8 +694,8 @@ elif st.session_state.page == "📈 Forecasting & Comparison":
             
             if not results_df_cml.empty:
                 fig_pred_cml = go.Figure()
-                fig_pred_cml.add_trace(go.Scatter(x=results_df_cml["Month"], y=results_df_cml["Actual"], mode=\'lines\', name=\'Actual Demand\'))
-                fig_pred_cml.add_trace(go.Scatter(x=results_df_cml["Month"], y=results_df_cml["Predicted"], mode=\'lines\', name=\'Predicted Demand (Causal ML)\\' , line=dict(dash=\'dash\')))
+                fig_pred_cml.add_trace(go.Scatter(x=results_df_cml["Month"], y=results_df_cml["Actual"], mode='lines', name='Actual Demand'))
+                fig_pred_cml.add_trace(go.Scatter(x=results_df_cml["Month"], y=results_df_cml["Predicted"], mode='lines', name='Predicted Demand (Causal ML)' , line=dict(dash='dash')))
                 fig_pred_cml.update_layout(title="Actual vs. Predicted Demand - Combined Causal ML Model", xaxis_title="Month", yaxis_title="Product Demand", template=plotly_template)
                 st.plotly_chart(fig_pred_cml, use_container_width=True)
             else: st.warning("Could not generate predictions for the combined model.")
@@ -728,8 +766,8 @@ elif st.session_state.page == "📈 Forecasting & Comparison":
             
             perf_df = pd.DataFrame(model_performance).T # Transpose for better viewing
             # Ensure columns exist before formatting
-            if "MAPE" in perf_df.columns: perf_df["MAPE"] = perf_df["MAPE"].map(\'{:.2%}\'.format)
-            if "RMSE" in perf_df.columns: perf_df["RMSE"] = perf_df["RMSE"].map(\'{:.2f}\'.format)
+            if "MAPE" in perf_df.columns: perf_df["MAPE"] = perf_df["MAPE"].map('{:.2%}'.format)
+            if "RMSE" in perf_df.columns: perf_df["RMSE"] = perf_df["RMSE"].map('{:.2f}'.format)
             st.dataframe(perf_df, use_container_width=True)
             
             st.divider()
@@ -780,4 +818,3 @@ elif st.session_state.page == "📥 Download & Links":
 else:
     st.error("Invalid page selected. Please use the sidebar navigation.")
     st.button("Go to Home", on_click=set_page, args=("🏠 Home / Overview",))
-

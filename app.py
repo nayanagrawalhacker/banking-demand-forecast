@@ -8,7 +8,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.ensemble import RandomForestRegressor # Using RF for XGBoost placeholder
 from sklearn.metrics import mean_squared_error, mean_absolute_percentage_error
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
-from statsmodels.tsa.arima.model import ARIMA
+# Removed: from statsmodels.tsa.arima.model import ARIMA
 import warnings
 import base64 # For encoding images/files for download
 
@@ -194,7 +194,7 @@ def get_table_download_link(df, filename="data.csv", text="Download CSV"):
     return href
 
 # --- Data Loading and Caching ---
-@st.cache_data # Use Streamlit\s caching to load data only once
+@st.cache_data # Use Streamlit's caching to load data only once
 def load_data(file_path):
     """Loads the banking demand dataset and performs initial preprocessing."""
     try:
@@ -225,8 +225,8 @@ df = load_data(data_path)
 
 # --- Model Training Functions (Cached) ---
 @st.cache_data
-def preprocess_for_ml(_df_ml, include_causal_features=False, causal_features_df=None):
-    """Prepares data for ML models, optionally including causal features."""
+def preprocess_for_ml(_df_ml, include_causal_features=False, causal_features_df=None, ts_features=None):
+    """Prepares data for ML models, optionally including causal features and specific TS features."""
     df_processed = _df_ml.copy()
     
     # Add causal features if provided
@@ -245,7 +245,12 @@ def preprocess_for_ml(_df_ml, include_causal_features=False, causal_features_df=
     
     # Define features (X) and target (y)
     exclude_cols = ["Product_Demand", "Month"] # Exclude target and original date
-    features = [col for col in df_encoded.columns if col not in exclude_cols]
+    
+    if ts_features: # Use specific features for simple TS model
+        features = [f for f in ts_features if f in df_encoded.columns]
+    else: # Use all other features for general ML models
+        features = [col for col in df_encoded.columns if col not in exclude_cols]
+        
     X = df_encoded[features]
     y = df_encoded["Product_Demand"]
     
@@ -281,27 +286,26 @@ def train_evaluate_xgboost(_df_filtered):
     results_df = pd.DataFrame({"Month": test_dates, "Actual": y_test, "Predicted": predictions})
     return model, rmse, mape, results_df
 
+# Removed: train_evaluate_arima function
+
 @st.cache_resource
-def train_evaluate_arima(_df_product):
-    """Trains and evaluates an ARIMA model for a specific product."""
-    ts_data = _df_product.set_index("Month")["Product_Demand"]
-    train_size = int(len(ts_data) * 0.8)
-    if train_size < 5: # Need sufficient data for ARIMA
+def train_evaluate_simple_ts(_df_filtered):
+    """Trains and evaluates a simple time-series model using lagged features."""
+    # Use only lagged demand and time features
+    ts_features_to_use = ["Demand_Lag1", "MonthNum", "Year", "Month_Since_Start"]
+    X_train, X_test, y_train, y_test, test_dates, _ = preprocess_for_ml(_df_filtered.copy(), ts_features=ts_features_to_use)
+    
+    if X_train.empty or X_test.empty:
         return None, np.nan, np.nan, pd.DataFrame()
-    train, test = ts_data[:train_size], ts_data[train_size:]
-    try:
-        # Use a simple order, consider auto_arima in a real scenario
-        model = ARIMA(train, order=(1, 1, 1)) 
-        model_fit = model.fit()
-        predictions = model_fit.predict(start=len(train), end=len(train) + len(test) - 1)
-        rmse = np.sqrt(mean_squared_error(test, predictions))
-        mape = mean_absolute_percentage_error(test, predictions)
-        results_df = pd.DataFrame({"Month": test.index, "Actual": test.values, "Predicted": predictions.values})
-        return model_fit, rmse, mape, results_df
-    except Exception as e:
-        # Don\t show error in comparison, just return NaN
-        # st.error(f"ARIMA failed for product: {e}")
-        return None, np.nan, np.nan, pd.DataFrame()
+        
+    # Use Linear Regression for simplicity
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+    predictions = model.predict(X_test)
+    rmse = np.sqrt(mean_squared_error(y_test, predictions))
+    mape = mean_absolute_percentage_error(y_test, predictions)
+    results_df = pd.DataFrame({"Month": test_dates, "Actual": y_test, "Predicted": predictions})
+    return model, rmse, mape, results_df
 
 @st.cache_data
 def get_confounders(_df_encoded, _treatment_var, _outcome_var):
@@ -314,7 +318,7 @@ def get_confounders(_df_encoded, _treatment_var, _outcome_var):
 def train_causal_model(_df_causal, _treatment_var, _outcome_var):
     """Trains a causal model using LinearDML and returns the model and effects."""
     if not ECONML_AVAILABLE:
-        st.warning("Causal inference features are disabled in this deployment due to dependency constraints.")
+        # st.warning("Causal inference features are disabled in this deployment due to dependency constraints.")
         return None, np.nan, np.nan, np.nan, None, None
         
     try:
@@ -571,9 +575,10 @@ elif st.session_state.page == "📈 Forecasting & Comparison":
         # --- Baseline Models Tab ---
         with forecast_tabs[0]:
             st.header("Baseline Model Forecasts")
-            st.markdown("Performance of traditional forecasting models (Linear Regression, ARIMA, XGBoost placeholder) on the test set.")
+            st.markdown("Performance of traditional forecasting models (Linear Regression, Simple Time Series, XGBoost placeholder) on the test set.")
             
-            baseline_model_type = st.selectbox("Select Baseline Model", ["Linear Regression", "XGBoost (Placeholder)", "ARIMA"], key="baseline_select")
+            # Updated model list
+            baseline_model_type = st.selectbox("Select Baseline Model", ["Linear Regression", "XGBoost (Placeholder)", "Simple Time Series"], key="baseline_select")
             results_df_baseline = pd.DataFrame()
             rmse_baseline, mape_baseline, model_obj_baseline = np.nan, np.nan, None
             
@@ -581,14 +586,9 @@ elif st.session_state.page == "📈 Forecasting & Comparison":
                 with st.spinner("Training Linear Regression Model..."): model_obj_baseline, rmse_baseline, mape_baseline, results_df_baseline = train_evaluate_linear_regression(df_filtered)
             elif baseline_model_type == "XGBoost (Placeholder)":
                 with st.spinner("Training XGBoost (RF Placeholder) Model..."): model_obj_baseline, rmse_baseline, mape_baseline, results_df_baseline = train_evaluate_xgboost(df_filtered)
-            elif baseline_model_type == "ARIMA":
-                arima_product = st.selectbox("Select Product for ARIMA", selected_products, key="arima_product_select_baseline")
-                if arima_product:
-                    df_product_filtered_baseline = df_filtered[df_filtered["Product"] == arima_product]
-                    if not df_product_filtered_baseline.empty: 
-                        with st.spinner(f"Training ARIMA Model for {arima_product}..."): model_obj_baseline, rmse_baseline, mape_baseline, results_df_baseline = train_evaluate_arima(df_product_filtered_baseline)
-                    else: st.warning(f"No data for {arima_product} with current filters.")
-                else: st.warning("Please select a product for ARIMA analysis.")
+            elif baseline_model_type == "Simple Time Series":
+                # Removed product selection for ARIMA
+                with st.spinner(f"Training Simple Time Series Model..."): model_obj_baseline, rmse_baseline, mape_baseline, results_df_baseline = train_evaluate_simple_ts(df_filtered)
             
             st.subheader(f"{baseline_model_type} Performance (Test Set)")
             bl_col1, bl_col2 = st.columns(2)
@@ -731,24 +731,16 @@ elif st.session_state.page == "📈 Forecasting & Comparison":
                     st.warning(f"XGBoost (RF) failed: {e}")
                     model_performance["XGBoost (RF)"] = {"RMSE": np.nan, "MAPE": np.nan}
 
-                # ARIMA (Average across selected products)
-                arima_rmses = []
-                arima_mapes = []
-                for product in selected_products:
-                    df_product_filtered_comp = df_filtered[df_filtered["Product"] == product]
-                    if not df_product_filtered_comp.empty:
-                        # Check if ARIMA was run for this product in baseline tab
-                        if "arima_product" in locals() and arima_product == product and "rmse_baseline" in locals() and baseline_model_type == "ARIMA":
-                             if not np.isnan(rmse_baseline): arima_rmses.append(rmse_baseline)
-                             if not np.isnan(mape_baseline): arima_mapes.append(mape_baseline)
-                        else:
-                            _, arima_rmse, arima_mape, _ = train_evaluate_arima(df_product_filtered_comp)
-                            if not np.isnan(arima_rmse): arima_rmses.append(arima_rmse)
-                            if not np.isnan(arima_mape): arima_mapes.append(arima_mape)
-                if arima_rmses:
-                    model_performance["ARIMA (Avg)"] = {"RMSE": np.mean(arima_rmses), "MAPE": np.mean(arima_mapes)}
-                else:
-                    model_performance["ARIMA (Avg)"] = {"RMSE": np.nan, "MAPE": np.nan}
+                # Simple Time Series (use cached results if available)
+                try:
+                    if "rmse_baseline" in locals() and baseline_model_type == "Simple Time Series":
+                        model_performance["Simple TS"] = {"RMSE": rmse_baseline, "MAPE": mape_baseline}
+                    else:
+                        _, ts_rmse, ts_mape, _ = train_evaluate_simple_ts(df_filtered)
+                        model_performance["Simple TS"] = {"RMSE": ts_rmse, "MAPE": ts_mape}
+                except Exception as e:
+                    st.warning(f"Simple Time Series failed: {e}")
+                    model_performance["Simple TS"] = {"RMSE": np.nan, "MAPE": np.nan}
                     
                 # Combined Causal ML (use cached results if available)
                 try:
@@ -818,3 +810,4 @@ elif st.session_state.page == "📥 Download & Links":
 else:
     st.error("Invalid page selected. Please use the sidebar navigation.")
     st.button("Go to Home", on_click=set_page, args=("🏠 Home / Overview",))
+
